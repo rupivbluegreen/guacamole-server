@@ -36,6 +36,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /**
  * Callback invoked by libwebsockets for events related to a WebSocket being
@@ -229,6 +230,24 @@ void* guac_kubernetes_client_thread(void* data) {
             "the requested Kubernetes pod is \"%s\".", endpoint_path);
 
     /* Set up screen recording, if requested */
+#ifdef ENABLE_S3
+    if (settings->recording_storage_type != NULL
+            && strcmp(settings->recording_storage_type, "s3") == 0) {
+        kubernetes_client->recording = guac_recording_create_s3(client,
+                settings->recording_s3_endpoint,
+                settings->recording_s3_bucket,
+                settings->recording_s3_key,
+                settings->recording_s3_region,
+                settings->recording_s3_access_key,
+                settings->recording_s3_secret_key,
+                0,
+                !settings->recording_exclude_output,
+                !settings->recording_exclude_mouse,
+                0,
+                settings->recording_include_keys);
+    }
+    else
+#endif
     if (settings->recording_path != NULL) {
         kubernetes_client->recording = guac_recording_create(client,
                 settings->recording_path,
@@ -273,6 +292,21 @@ void* guac_kubernetes_client_thread(void* data) {
             kubernetes_client);
 
     /* Set up typescript, if requested */
+#ifdef ENABLE_S3
+    if (settings->recording_storage_type != NULL
+            && strcmp(settings->recording_storage_type, "s3") == 0
+            && settings->recording_s3_endpoint != NULL) {
+        guac_terminal_create_typescript_s3(kubernetes_client->term,
+                settings->typescript_name != NULL ? settings->typescript_name : "typescript",
+                settings->recording_s3_endpoint,
+                settings->recording_s3_bucket,
+                settings->recording_s3_key != NULL ? settings->recording_s3_key : "typescript",
+                settings->recording_s3_region,
+                settings->recording_s3_access_key,
+                settings->recording_s3_secret_key);
+    }
+    else
+#endif
     if (settings->typescript_path != NULL) {
         guac_terminal_create_typescript(kubernetes_client->term,
                 settings->typescript_path,

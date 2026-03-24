@@ -69,6 +69,13 @@ const char* GUAC_SSH_CLIENT_ARGS[] = {
     "recording-include-keys",
     "create-recording-path",
     "recording-write-existing",
+    "recording-storage-type",
+    "recording-s3-endpoint",
+    "recording-s3-bucket",
+    "recording-s3-key",
+    "recording-s3-region",
+    "recording-s3-access-key",
+    "recording-s3-secret-key",
     "read-only",
     "server-alive-interval",
     "backspace",
@@ -265,6 +272,41 @@ enum SSH_ARGS_IDX {
      * Disabled by default.
      */
     IDX_RECORDING_WRITE_EXISTING,
+
+    /**
+     * The storage type for recordings: "s3" or "local" (default).
+     */
+    IDX_RECORDING_STORAGE_TYPE,
+
+    /**
+     * The S3 endpoint URL for recording storage.
+     */
+    IDX_RECORDING_S3_ENDPOINT,
+
+    /**
+     * The S3 bucket name for recording storage.
+     */
+    IDX_RECORDING_S3_BUCKET,
+
+    /**
+     * The S3 object key for the recording.
+     */
+    IDX_RECORDING_S3_KEY,
+
+    /**
+     * The S3 region for recording storage.
+     */
+    IDX_RECORDING_S3_REGION,
+
+    /**
+     * The S3 access key ID.
+     */
+    IDX_RECORDING_S3_ACCESS_KEY,
+
+    /**
+     * The S3 secret access key.
+     */
+    IDX_RECORDING_S3_SECRET_KEY,
 
     /**
      * "true" if this connection should be read-only (user input should be
@@ -546,6 +588,35 @@ guac_ssh_settings* guac_ssh_parse_args(guac_user* user,
         guac_user_parse_args_boolean(user, GUAC_SSH_CLIENT_ARGS, argv,
                 IDX_RECORDING_WRITE_EXISTING, false);
 
+    /* Read S3 recording storage settings */
+    settings->recording_storage_type =
+        guac_user_parse_args_string(user, GUAC_SSH_CLIENT_ARGS, argv,
+                IDX_RECORDING_STORAGE_TYPE, NULL);
+
+    settings->recording_s3_endpoint =
+        guac_user_parse_args_string(user, GUAC_SSH_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_ENDPOINT, NULL);
+
+    settings->recording_s3_bucket =
+        guac_user_parse_args_string(user, GUAC_SSH_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_BUCKET, NULL);
+
+    settings->recording_s3_key =
+        guac_user_parse_args_string(user, GUAC_SSH_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_KEY, NULL);
+
+    settings->recording_s3_region =
+        guac_user_parse_args_string(user, GUAC_SSH_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_REGION, NULL);
+
+    settings->recording_s3_access_key =
+        guac_user_parse_args_string(user, GUAC_SSH_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_ACCESS_KEY, NULL);
+
+    settings->recording_s3_secret_key =
+        guac_user_parse_args_string(user, GUAC_SSH_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_SECRET_KEY, NULL);
+
     /* Parse server alive interval */
     settings->server_alive_interval =
         guac_user_parse_args_int(user, GUAC_SSH_CLIENT_ARGS, argv,
@@ -674,6 +745,13 @@ void guac_ssh_settings_free(guac_ssh_settings* settings) {
     /* Free screen recording settings */
     guac_mem_free(settings->recording_name);
     guac_mem_free(settings->recording_path);
+    guac_mem_free(settings->recording_storage_type);
+    guac_mem_free(settings->recording_s3_endpoint);
+    guac_mem_free(settings->recording_s3_bucket);
+    guac_mem_free(settings->recording_s3_key);
+    guac_mem_free(settings->recording_s3_region);
+    guac_mem_free(settings->recording_s3_access_key);
+    guac_mem_free(settings->recording_s3_secret_key);
 
     /* Free terminal emulator type. */
     guac_mem_free(settings->terminal_type);

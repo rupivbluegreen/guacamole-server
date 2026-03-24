@@ -282,6 +282,24 @@ void* ssh_client_thread(void* data) {
     char ssh_ttymodes[GUAC_SSH_TTYMODES_SIZE(1)];
 
     /* Set up screen recording, if requested */
+#ifdef ENABLE_S3
+    if (settings->recording_storage_type != NULL
+            && strcmp(settings->recording_storage_type, "s3") == 0) {
+        ssh_client->recording = guac_recording_create_s3(client,
+                settings->recording_s3_endpoint,
+                settings->recording_s3_bucket,
+                settings->recording_s3_key,
+                settings->recording_s3_region,
+                settings->recording_s3_access_key,
+                settings->recording_s3_secret_key,
+                0,
+                !settings->recording_exclude_output,
+                !settings->recording_exclude_mouse,
+                0,
+                settings->recording_include_keys);
+    }
+    else
+#endif
     if (settings->recording_path != NULL) {
         ssh_client->recording = guac_recording_create(client,
                 settings->recording_path,
@@ -325,6 +343,21 @@ void* ssh_client_thread(void* data) {
     guac_client_for_owner(client, guac_ssh_send_current_argv, ssh_client);
 
     /* Set up typescript, if requested */
+#ifdef ENABLE_S3
+    if (settings->recording_storage_type != NULL
+            && strcmp(settings->recording_storage_type, "s3") == 0
+            && settings->recording_s3_endpoint != NULL) {
+        guac_terminal_create_typescript_s3(ssh_client->term,
+                settings->typescript_name != NULL ? settings->typescript_name : "typescript",
+                settings->recording_s3_endpoint,
+                settings->recording_s3_bucket,
+                settings->recording_s3_key != NULL ? settings->recording_s3_key : "typescript",
+                settings->recording_s3_region,
+                settings->recording_s3_access_key,
+                settings->recording_s3_secret_key);
+    }
+    else
+#endif
     if (settings->typescript_path != NULL) {
         guac_terminal_create_typescript(ssh_client->term,
                 settings->typescript_path,

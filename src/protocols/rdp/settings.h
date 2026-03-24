@@ -595,7 +595,43 @@ typedef struct guac_rdp_settings {
      */
     int recording_write_existing;
 
-    /** 
+    /**
+     * The storage type for recordings. "s3" for S3-compatible storage,
+     * NULL or "local" for local filesystem (default).
+     */
+    char* recording_storage_type;
+
+    /**
+     * The S3 endpoint URL for recording storage, if using S3.
+     */
+    char* recording_s3_endpoint;
+
+    /**
+     * The S3 bucket name for recording storage, if using S3.
+     */
+    char* recording_s3_bucket;
+
+    /**
+     * The S3 object key for the recording, if using S3.
+     */
+    char* recording_s3_key;
+
+    /**
+     * The S3 region, if using S3.
+     */
+    char* recording_s3_region;
+
+    /**
+     * The S3 access key ID, if using S3.
+     */
+    char* recording_s3_access_key;
+
+    /**
+     * The S3 secret access key, if using S3.
+     */
+    char* recording_s3_secret_key;
+
+    /**
      * The method to apply when the user's display changes size.
      */
     guac_rdp_resize_method resize_method;

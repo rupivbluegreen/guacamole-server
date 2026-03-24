@@ -17,6 +17,8 @@
  * under the License.
  */
 
+#include "config.h"
+
 #include "guacamole/mem.h"
 #include "guacamole/client.h"
 #include "guacamole/error.h"
@@ -25,6 +27,10 @@
 #include "guacamole/recording.h"
 #include "guacamole/socket.h"
 #include "guacamole/timestamp.h"
+
+#ifdef ENABLE_S3
+#include "guacamole/socket-s3.h"
+#endif
 
 #ifdef __MINGW32__
 #include <direct.h>
@@ -132,4 +138,43 @@ void guac_recording_report_key(guac_recording* recording,
                 guac_timestamp_current());
 
 }
+
+#ifdef ENABLE_S3
+guac_recording* guac_recording_create_s3(guac_client* client,
+        const char* endpoint, const char* bucket, const char* key,
+        const char* region, const char* access_key, const char* secret_key,
+        int use_ssl, int include_output, int include_mouse,
+        int include_touch, int include_keys) {
+
+    /* Attempt to open S3 socket for recording */
+    guac_socket* s3_socket = guac_socket_open_s3(endpoint, bucket, key,
+            region, access_key, secret_key, use_ssl);
+    if (s3_socket == NULL) {
+        guac_client_log(client, GUAC_LOG_ERROR, "Creation of S3 recording "
+                "failed: %s: %s", guac_error_message,
+                guac_status_string(guac_error));
+        return NULL;
+    }
+
+    /* Create recording structure with reference to underlying socket */
+    guac_recording* recording = guac_mem_alloc(sizeof(guac_recording));
+    recording->socket = s3_socket;
+    recording->include_output = include_output;
+    recording->include_mouse = include_mouse;
+    recording->include_touch = include_touch;
+    recording->include_keys = include_keys;
+
+    /* Replace client socket with wrapped recording socket only if including
+     * output within the recording */
+    if (include_output)
+        client->socket = guac_socket_tee(client->socket, recording->socket);
+
+    /* Recording creation succeeded */
+    guac_client_log(client, GUAC_LOG_INFO, "Recording of session will be "
+            "saved to S3 bucket \"%s\" as \"%s\".", bucket, key);
+
+    return recording;
+
+}
+#endif
 

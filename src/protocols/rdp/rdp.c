@@ -923,6 +923,24 @@ void* guac_rdp_client_thread(void* data) {
 #endif
 
     /* Set up screen recording, if requested */
+#ifdef ENABLE_S3
+    if (settings->recording_storage_type != NULL
+            && strcmp(settings->recording_storage_type, "s3") == 0) {
+        rdp_client->recording = guac_recording_create_s3(client,
+                settings->recording_s3_endpoint,
+                settings->recording_s3_bucket,
+                settings->recording_s3_key,
+                settings->recording_s3_region,
+                settings->recording_s3_access_key,
+                settings->recording_s3_secret_key,
+                0, /* use_ssl - determined by endpoint URL scheme */
+                !settings->recording_exclude_output,
+                !settings->recording_exclude_mouse,
+                !settings->recording_exclude_touch,
+                settings->recording_include_keys);
+    }
+    else
+#endif
     if (settings->recording_path != NULL) {
         rdp_client->recording = guac_recording_create(client,
                 settings->recording_path,

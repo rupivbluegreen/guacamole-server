@@ -34,7 +34,7 @@ ARG BUILD_ARCHITECTURE
 # default, this is detected automatically.
 ARG BUILD_JOBS
 
-# The directory that will house the guacamole-server source during the build 
+# The directory that will house the guacamole-server source during the build
 ARG BUILD_DIR=/tmp/guacamole-server
 
 # FreeRDP version (default to version 2)
@@ -185,6 +185,21 @@ RUN apk add --no-cache                \
         util-linux-dev                \
         webkit2gtk-dev
 
+# Build libcurl from source against OpenSSL 1.1 (the Alpine 3.18 curl-dev
+# package requires OpenSSL 3.x which conflicts with openssl1.1-compat-dev)
+RUN cd /tmp                                                          \
+    && wget -q https://curl.se/download/curl-8.5.0.tar.gz            \
+    && tar xzf curl-8.5.0.tar.gz                                     \
+    && cd curl-8.5.0                                                 \
+    && ./configure --with-openssl --prefix=/usr                       \
+           --enable-shared --disable-static                          \
+           --without-libpsl --without-brotli --without-zstd          \
+           --without-nghttp2 --without-libidn2 --without-librtmp    \
+           --silent                                                  \
+    && make -j$(nproc) --silent                                      \
+    && make install --silent                                         \
+    && rm -rf /tmp/curl-8.5.0*
+
 # Copy generic, automatic build script
 COPY ./src/guacd-docker/bin/autobuild.sh ${BUILD_DIR}/src/guacd-docker/bin/
 
@@ -308,6 +323,9 @@ ARG PREFIX_DIR
 
 # Copy build artifacts into this stage
 COPY --from=guacamole-server ${PREFIX_DIR} ${PREFIX_DIR}
+
+# Copy libcurl shared library from the builder (built from source)
+COPY --from=guacamole-server /usr/lib/libcurl.so* /usr/lib/
 
 # Bring runtime environment up to date and install runtime dependencies
 RUN apk add --no-cache                \

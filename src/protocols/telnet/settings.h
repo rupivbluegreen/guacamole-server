@@ -255,6 +255,42 @@ typedef struct guac_telnet_settings {
     bool recording_write_existing;
 
     /**
+     * The type of storage to use for recordings: "s3" for S3 storage, or
+     * NULL or "local" for local filesystem (default).
+     */
+    char* recording_storage_type;
+
+    /**
+     * The S3 endpoint URL for recording storage, if using S3.
+     */
+    char* recording_s3_endpoint;
+
+    /**
+     * The S3 bucket name for recording storage, if using S3.
+     */
+    char* recording_s3_bucket;
+
+    /**
+     * The S3 object key for the recording, if using S3.
+     */
+    char* recording_s3_key;
+
+    /**
+     * The S3 region, if using S3.
+     */
+    char* recording_s3_region;
+
+    /**
+     * The S3 access key ID, if using S3.
+     */
+    char* recording_s3_access_key;
+
+    /**
+     * The S3 secret access key, if using S3.
+     */
+    char* recording_s3_secret_key;
+
+    /**
      * The ASCII code, as an integer, that the telnet client will use when the
      * backspace key is pressed.  By default, this is 127, ASCII delete, if
      * not specified in the client settings.

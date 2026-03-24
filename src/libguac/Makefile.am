@@ -186,6 +186,12 @@ libguac_la_SOURCES += socket-ssl.c
 libguacinc_HEADERS += guacamole/socket-ssl.h
 endif
 
+# S3 recording storage support (requires libcurl and OpenSSL for AWS SigV4)
+if ENABLE_S3
+libguac_la_SOURCES += socket-s3.c
+libguacinc_HEADERS += guacamole/socket-s3.h
+endif
+
 # Winsock support
 if ENABLE_WINSOCK
 libguac_la_SOURCES += socket-wsa.c
@@ -208,5 +214,6 @@ libguac_la_LDFLAGS =     \
     @UUID_LIBS@          \
     @VORBIS_LIBS@        \
     @WEBP_LIBS@          \
+    @CURL_LIBS@          \
     @WINSOCK_LIBS@
 

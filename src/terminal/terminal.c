@@ -2638,6 +2638,33 @@ int guac_terminal_create_typescript(guac_terminal* term, const char* path,
 
 }
 
+#ifdef ENABLE_S3
+int guac_terminal_create_typescript_s3(guac_terminal* term, const char* name,
+        const char* endpoint, const char* bucket, const char* key,
+        const char* region, const char* access_key, const char* secret_key) {
+
+    /* Create S3-backed typescript */
+    term->typescript = guac_terminal_typescript_alloc_s3(
+            name, endpoint, bucket, key, region, access_key, secret_key);
+
+    /* Log failure */
+    if (term->typescript == NULL) {
+        guac_client_log(term->client, GUAC_LOG_ERROR, "Creation of S3 "
+                "typescript failed: %s: %s", guac_error_message,
+                guac_status_string(guac_error));
+        return 1;
+    }
+
+    /* If typescript was successfully created, log destination */
+    guac_client_log(term->client, GUAC_LOG_INFO, "Typescript of terminal "
+            "session will be uploaded to S3 bucket \"%s\" as \"%s\".",
+            bucket, key);
+
+    return 0;
+
+}
+#endif
+
 /**
  * Synchronize the state of the provided terminal to a subset of users of
  * the provided guac_client using the provided socket.

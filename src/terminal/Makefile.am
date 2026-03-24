@@ -83,8 +83,10 @@ libguac_terminal_la_LDFLAGS = \
     -version-info 2:1:0       \
     -no-undefined             \
     @CAIRO_LIBS@              \
+    @CURL_LIBS@               \
     @MATH_LIBS@               \
     @PANGO_LIBS@              \
     @PANGOCAIRO_LIBS@         \
-    @PTHREAD_LIBS@
+    @PTHREAD_LIBS@            \
+    @SSL_LIBS@
 

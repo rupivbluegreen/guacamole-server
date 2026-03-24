@@ -1236,6 +1236,46 @@ void guac_terminal_remove_user(guac_terminal* terminal, guac_user* user);
 int guac_terminal_create_typescript(guac_terminal* term, const char* path,
         const char* name, int create_path, int allow_write_existing);
 
+#ifdef ENABLE_S3
+/**
+ * Creates a typescript that will be uploaded to an S3-compatible object
+ * store when the typescript is freed. During the session, data is written
+ * to temporary local files. On close, both the data file and timing file
+ * are uploaded to S3.
+ *
+ * @param term
+ *     The terminal to associate with the created typescript.
+ *
+ * @param name
+ *     The base name to use for the typescript files.
+ *
+ * @param endpoint
+ *     The S3 endpoint URL.
+ *
+ * @param bucket
+ *     The S3 bucket name.
+ *
+ * @param key
+ *     The S3 object key for the data file.
+ *
+ * @param region
+ *     The S3 region.
+ *
+ * @param access_key
+ *     The S3 access key ID.
+ *
+ * @param secret_key
+ *     The S3 secret access key.
+ *
+ * @return
+ *     Zero if the typescript has been successfully created, non-zero
+ *     otherwise.
+ */
+int guac_terminal_create_typescript_s3(guac_terminal* term, const char* name,
+        const char* endpoint, const char* bucket, const char* key,
+        const char* region, const char* access_key, const char* secret_key);
+#endif
+
 /**
  * Immediately applies the given color scheme to the given terminal, overriding
  * the color scheme provided when the terminal was created. Valid color schemes

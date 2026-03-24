@@ -382,6 +382,40 @@ AM_CONDITIONAL([ENABLE_SSL], [test "x${have_ssl}" = "xyes"])
 AC_SUBST(SSL_LIBS)
 
 #
+# libcurl (for S3 recording storage)
+#
+
+have_curl=disabled
+CURL_LIBS=
+AC_ARG_WITH([curl],
+            [AS_HELP_STRING([--with-curl],
+                            [support S3 recording storage via libcurl @<:@default=check@:>@])],
+            [],
+            [with_curl=check])
+
+if test "x$with_curl" != "xno"
+then
+    have_curl=yes
+
+    AC_CHECK_HEADER(curl/curl.h,, [have_curl=no])
+    AC_CHECK_LIB([curl], [curl_easy_init], [CURL_LIBS="$CURL_LIBS -lcurl"], [have_curl=no])
+
+    if test "x${have_curl}" = "xno"
+    then
+        AC_MSG_WARN([
+  --------------------------------------------
+   Unable to find libcurl.
+   Session recordings cannot be stored in S3.
+  --------------------------------------------])
+    else
+        AC_DEFINE([ENABLE_S3],, [Whether S3 recording storage via libcurl is enabled])
+    fi
+fi
+
+AM_CONDITIONAL([ENABLE_S3], [test "x${have_curl}" = "xyes"])
+AC_SUBST(CURL_LIBS)
+
+#
 # Winsock
 #
 
@@ -1522,6 +1556,7 @@ $PACKAGE_NAME version $PACKAGE_VERSION
      libavformat ......... ${have_libavformat}
      libavutil ........... ${have_libavutil}
      libssh2 ............. ${have_libssh2}
+     libcurl ............. ${have_curl}
      libssl .............. ${have_ssl}
      libswscale .......... ${have_libswscale}
      libtelnet ........... ${have_libtelnet}

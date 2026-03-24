@@ -533,6 +533,24 @@ void* guac_telnet_client_thread(void* data) {
     }
 
     /* Set up screen recording, if requested */
+#ifdef ENABLE_S3
+    if (settings->recording_storage_type != NULL
+            && strcmp(settings->recording_storage_type, "s3") == 0) {
+        telnet_client->recording = guac_recording_create_s3(client,
+                settings->recording_s3_endpoint,
+                settings->recording_s3_bucket,
+                settings->recording_s3_key,
+                settings->recording_s3_region,
+                settings->recording_s3_access_key,
+                settings->recording_s3_secret_key,
+                0,
+                !settings->recording_exclude_output,
+                !settings->recording_exclude_mouse,
+                0,
+                settings->recording_include_keys);
+    }
+    else
+#endif
     if (settings->recording_path != NULL) {
         telnet_client->recording = guac_recording_create(client,
                 settings->recording_path,
@@ -577,6 +595,21 @@ void* guac_telnet_client_thread(void* data) {
             telnet_client);
 
     /* Set up typescript, if requested */
+#ifdef ENABLE_S3
+    if (settings->recording_storage_type != NULL
+            && strcmp(settings->recording_storage_type, "s3") == 0
+            && settings->recording_s3_endpoint != NULL) {
+        guac_terminal_create_typescript_s3(telnet_client->term,
+                settings->typescript_name != NULL ? settings->typescript_name : "typescript",
+                settings->recording_s3_endpoint,
+                settings->recording_s3_bucket,
+                settings->recording_s3_key != NULL ? settings->recording_s3_key : "typescript",
+                settings->recording_s3_region,
+                settings->recording_s3_access_key,
+                settings->recording_s3_secret_key);
+    }
+    else
+#endif
     if (settings->typescript_path != NULL) {
         guac_terminal_create_typescript(telnet_client->term,
                 settings->typescript_path,

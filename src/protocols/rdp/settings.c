@@ -127,6 +127,13 @@ const char* GUAC_RDP_CLIENT_ARGS[] = {
     "recording-include-keys",
     "create-recording-path",
     "recording-write-existing",
+    "recording-storage-type",
+    "recording-s3-endpoint",
+    "recording-s3-bucket",
+    "recording-s3-key",
+    "recording-s3-region",
+    "recording-s3-access-key",
+    "recording-s3-secret-key",
     "resize-method",
     "enable-audio-input",
     "enable-touch",
@@ -592,6 +599,41 @@ enum RDP_ARGS_IDX {
      * Disabled by default.
      */
     IDX_RECORDING_WRITE_EXISTING,
+
+    /**
+     * The storage type for recordings: "s3" or "local" (default).
+     */
+    IDX_RECORDING_STORAGE_TYPE,
+
+    /**
+     * The S3 endpoint URL for recording storage.
+     */
+    IDX_RECORDING_S3_ENDPOINT,
+
+    /**
+     * The S3 bucket name for recording storage.
+     */
+    IDX_RECORDING_S3_BUCKET,
+
+    /**
+     * The S3 object key for the recording.
+     */
+    IDX_RECORDING_S3_KEY,
+
+    /**
+     * The S3 region for recording storage.
+     */
+    IDX_RECORDING_S3_REGION,
+
+    /**
+     * The S3 access key ID.
+     */
+    IDX_RECORDING_S3_ACCESS_KEY,
+
+    /**
+     * The S3 secret access key.
+     */
+    IDX_RECORDING_S3_SECRET_KEY,
 
     /**
      * The method to use to apply screen size changes requested by the user.
@@ -1215,6 +1257,35 @@ guac_rdp_settings* guac_rdp_parse_args(guac_user* user,
     settings->recording_write_existing =
         guac_user_parse_args_boolean(user, GUAC_RDP_CLIENT_ARGS, argv,
                 IDX_RECORDING_WRITE_EXISTING, 0);
+
+    /* Read S3 recording storage settings */
+    settings->recording_storage_type =
+        guac_user_parse_args_string(user, GUAC_RDP_CLIENT_ARGS, argv,
+                IDX_RECORDING_STORAGE_TYPE, NULL);
+
+    settings->recording_s3_endpoint =
+        guac_user_parse_args_string(user, GUAC_RDP_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_ENDPOINT, NULL);
+
+    settings->recording_s3_bucket =
+        guac_user_parse_args_string(user, GUAC_RDP_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_BUCKET, NULL);
+
+    settings->recording_s3_key =
+        guac_user_parse_args_string(user, GUAC_RDP_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_KEY, NULL);
+
+    settings->recording_s3_region =
+        guac_user_parse_args_string(user, GUAC_RDP_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_REGION, NULL);
+
+    settings->recording_s3_access_key =
+        guac_user_parse_args_string(user, GUAC_RDP_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_ACCESS_KEY, NULL);
+
+    settings->recording_s3_secret_key =
+        guac_user_parse_args_string(user, GUAC_RDP_CLIENT_ARGS, argv,
+                IDX_RECORDING_S3_SECRET_KEY, NULL);
 
     /* No resize method */
     if (strcmp(argv[IDX_RESIZE_METHOD], "") == 0) {

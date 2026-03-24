@@ -578,6 +578,24 @@ void* guac_vnc_client_thread(void* data) {
     vnc_client->rfb_client = rfb_client;
 
     /* Set up screen recording, if requested */
+#ifdef ENABLE_S3
+    if (settings->recording_storage_type != NULL
+            && strcmp(settings->recording_storage_type, "s3") == 0) {
+        vnc_client->recording = guac_recording_create_s3(client,
+                settings->recording_s3_endpoint,
+                settings->recording_s3_bucket,
+                settings->recording_s3_key,
+                settings->recording_s3_region,
+                settings->recording_s3_access_key,
+                settings->recording_s3_secret_key,
+                0,
+                !settings->recording_exclude_output,
+                !settings->recording_exclude_mouse,
+                0, /* VNC doesn't support touch recording */
+                settings->recording_include_keys);
+    }
+    else
+#endif
     if (settings->recording_path != NULL) {
         vnc_client->recording = guac_recording_create(client,
                 settings->recording_path,

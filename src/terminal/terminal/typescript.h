@@ -27,6 +27,8 @@
  * @file typescript.h
  */
 
+#include "config.h"
+
 #include <guacamole/timestamp.h>
 
 /**
@@ -122,6 +124,49 @@ typedef struct guac_terminal_typescript {
      */
     guac_timestamp last_flush;
 
+#ifdef ENABLE_S3
+    /**
+     * Non-zero if this typescript should be uploaded to S3 on close.
+     */
+    int use_s3;
+
+    /**
+     * The S3 endpoint URL for uploading.
+     */
+    char* s3_endpoint;
+
+    /**
+     * The S3 bucket for uploading.
+     */
+    char* s3_bucket;
+
+    /**
+     * The S3 object key prefix for uploading. The data file will be uploaded
+     * as "{key}" and the timing file as "{key}.timing".
+     */
+    char* s3_key;
+
+    /**
+     * The S3 region.
+     */
+    char* s3_region;
+
+    /**
+     * The S3 access key ID.
+     */
+    char* s3_access_key;
+
+    /**
+     * The S3 secret access key.
+     */
+    char* s3_secret_key;
+
+    /**
+     * The local path where temp files are written.
+     */
+    char* s3_temp_path;
+#endif
+
 } guac_terminal_typescript;
 
 /**
@@ -189,6 +234,44 @@ void guac_terminal_typescript_flush(guac_terminal_typescript* typescript);
  *     The typescript to free.
  */
 void guac_terminal_typescript_free(guac_terminal_typescript* typescript);
+
+#ifdef ENABLE_S3
+/**
+ * Creates a pair of typescript files in a temporary directory, returning an
+ * abstraction which represents those files. On free, the files will be
+ * uploaded to the specified S3-compatible object store and the temp files
+ * will be removed.
+ *
+ * @param name
+ *     The base name to use for the typescript files.
+ *
+ * @param endpoint
+ *     The S3 endpoint URL.
+ *
+ * @param bucket
+ *     The S3 bucket name.
+ *
+ * @param key
+ *     The S3 object key for the data file. The timing file will be stored
+ *     as "{key}.timing".
+ *
+ * @param region
+ *     The S3 region.
+ *
+ * @param access_key
+ *     The S3 access key ID.
+ *
+ * @param secret_key
+ *     The S3 secret access key.
+ *
+ * @return
+ *     A new guac_terminal_typescript which will upload to S3 on free,
+ *     or NULL if creation failed.
+ */
+guac_terminal_typescript* guac_terminal_typescript_alloc_s3(const char* name,
+        const char* endpoint, const char* bucket, const char* key,
+        const char* region, const char* access_key, const char* secret_key);
+#endif
 
 #endif
 

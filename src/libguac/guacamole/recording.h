@@ -162,6 +162,62 @@ guac_recording* guac_recording_create(guac_client* client,
         int include_output, int include_mouse, int include_touch,
         int include_keys, int allow_write_existing);
 
+#ifdef ENABLE_S3
+/**
+ * Replaces the socket of the given client such that all further Guacamole
+ * protocol output will be streamed to an S3-compatible object store via
+ * multipart upload. The recording will automatically be completed and uploaded
+ * once the client is freed. If the upload fails, it will be aborted
+ * automatically.
+ *
+ * @param client
+ *     The client whose output should be recorded to S3.
+ *
+ * @param endpoint
+ *     The S3 endpoint URL (e.g., "http://minio:9000").
+ *
+ * @param bucket
+ *     The S3 bucket name.
+ *
+ * @param key
+ *     The S3 object key (path within the bucket).
+ *
+ * @param region
+ *     The S3 region (e.g., "us-east-1").
+ *
+ * @param access_key
+ *     The S3 access key ID.
+ *
+ * @param secret_key
+ *     The S3 secret access key.
+ *
+ * @param use_ssl
+ *     Non-zero if the endpoint uses HTTPS, zero for HTTP.
+ *
+ * @param include_output
+ *     Non-zero if output which is broadcast to each connected client
+ *     (graphics, streams, etc.) should be included in the session recording.
+ *
+ * @param include_mouse
+ *     Non-zero if changes to mouse state should be included.
+ *
+ * @param include_touch
+ *     Non-zero if touch events should be included.
+ *
+ * @param include_keys
+ *     Non-zero if keys pressed and released should be included.
+ *
+ * @return
+ *     A new guac_recording structure representing the in-progress recording
+ *     if the S3 upload has been successfully initiated, NULL otherwise.
+ */
+guac_recording* guac_recording_create_s3(guac_client* client,
+        const char* endpoint, const char* bucket, const char* key,
+        const char* region, const char* access_key, const char* secret_key,
+        int use_ssl, int include_output, int include_mouse,
+        int include_touch, int include_keys);
+#endif
+
 /**
  * Frees the resources associated with the given in-progress recording. Note
  * that, due to the manner that recordings are attached to the guac_client, the
