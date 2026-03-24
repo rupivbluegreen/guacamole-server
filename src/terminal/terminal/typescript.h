@@ -76,6 +76,14 @@
  */
 #define GUAC_TERMINAL_TYPESCRIPT_TIMING_SUFFIX "timing"
 
+#ifdef ENABLE_S3
+/**
+ * Opaque type representing an S3 multipart upload stream. Defined in
+ * typescript.c.
+ */
+typedef struct guac_ts_s3_stream guac_ts_s3_stream;
+#endif
+
 /**
  * An active typescript, consisting of a data file (raw terminal output) and
  * timing file (related timestamps and byte counts).
@@ -126,45 +134,22 @@ typedef struct guac_terminal_typescript {
 
 #ifdef ENABLE_S3
     /**
-     * Non-zero if this typescript should be uploaded to S3 on close.
+     * Non-zero if this typescript streams directly to S3 via multipart upload.
      */
     int use_s3;
 
     /**
-     * The S3 endpoint URL for uploading.
+     * The S3 multipart upload stream for the data file, or NULL if not using
+     * S3. Data is buffered and uploaded in parts as the buffer fills.
      */
-    char* s3_endpoint;
+    guac_ts_s3_stream* s3_data_stream;
 
     /**
-     * The S3 bucket for uploading.
+     * The S3 multipart upload stream for the timing file, or NULL if not using
+     * S3. The timing file is typically small and uploads as a single final
+     * part on close.
      */
-    char* s3_bucket;
-
-    /**
-     * The S3 object key prefix for uploading. The data file will be uploaded
-     * as "{key}" and the timing file as "{key}.timing".
-     */
-    char* s3_key;
-
-    /**
-     * The S3 region.
-     */
-    char* s3_region;
-
-    /**
-     * The S3 access key ID.
-     */
-    char* s3_access_key;
-
-    /**
-     * The S3 secret access key.
-     */
-    char* s3_secret_key;
-
-    /**
-     * The local path where temp files are written.
-     */
-    char* s3_temp_path;
+    guac_ts_s3_stream* s3_timing_stream;
 #endif
 
 } guac_terminal_typescript;
@@ -237,10 +222,10 @@ void guac_terminal_typescript_free(guac_terminal_typescript* typescript);
 
 #ifdef ENABLE_S3
 /**
- * Creates a pair of typescript files in a temporary directory, returning an
- * abstraction which represents those files. On free, the files will be
- * uploaded to the specified S3-compatible object store and the temp files
- * will be removed.
+ * Creates a typescript that streams directly to an S3-compatible object store
+ * via multipart upload. No local temporary files are used. The data file is
+ * streamed as "{key}" and the timing file as "{key}.timing". The uploads are
+ * completed when the typescript is freed.
  *
  * @param name
  *     The base name to use for the typescript files.

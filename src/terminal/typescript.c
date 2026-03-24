@@ -121,6 +121,11 @@ void guac_terminal_typescript_write(guac_terminal_typescript* typescript,
 
 }
 
+#ifdef ENABLE_S3
+static int guac_ts_s3_stream_write(guac_ts_s3_stream* stream,
+        const char* data, size_t length);
+#endif
+
 void guac_terminal_typescript_flush(guac_terminal_typescript* typescript) {
 
     /* Do nothing if nothing to flush */
@@ -145,6 +150,17 @@ void guac_terminal_typescript_flush(guac_terminal_typescript* typescript) {
     if (timestamp_length > sizeof(timestamp_buffer))
         timestamp_length = sizeof(timestamp_buffer);
 
+#ifdef ENABLE_S3
+    if (typescript->use_s3) {
+        /* Write timing and data directly to S3 streams */
+        guac_ts_s3_stream_write(typescript->s3_timing_stream,
+                timestamp_buffer, timestamp_length);
+        guac_ts_s3_stream_write(typescript->s3_data_stream,
+                typescript->buffer, typescript->length);
+    }
+    else {
+#endif
+
     /* Write timestamp to timing file */
     guac_common_write(typescript->timing_fd,
             timestamp_buffer, timestamp_length);
@@ -152,6 +168,10 @@ void guac_terminal_typescript_flush(guac_terminal_typescript* typescript) {
     /* Empty buffer into data file */
     guac_common_write(typescript->data_fd,
             typescript->buffer, typescript->length);
+
+#ifdef ENABLE_S3
+    }
+#endif
 
     /* Buffer is now flushed */
     typescript->length = 0;
@@ -162,12 +182,89 @@ void guac_terminal_typescript_flush(guac_terminal_typescript* typescript) {
 #ifdef ENABLE_S3
 
 /**
+ * The minimum size of an S3 multipart upload part, in bytes. All parts except
+ * the last must be at least this size.
+ */
+#define GUAC_TS_S3_MIN_PART_SIZE (5 * 1024 * 1024)
+
+/**
+ * The maximum number of parts in an S3 multipart upload.
+ */
+#define GUAC_TS_S3_MAX_PARTS 10000
+
+/**
  * Helper struct for receiving response data from libcurl.
  */
 typedef struct guac_ts_s3_response {
     char* data;
     size_t size;
 } guac_ts_s3_response;
+
+/**
+ * Helper struct for providing upload data to libcurl from a memory buffer.
+ */
+typedef struct guac_ts_s3_upload_context {
+    const char* data;
+    size_t remaining;
+} guac_ts_s3_upload_context;
+
+/**
+ * Data associated with a single uploaded S3 part.
+ */
+typedef struct guac_ts_s3_part {
+    int part_number;
+    char etag[256];
+} guac_ts_s3_part;
+
+/**
+ * An S3 multipart upload stream. Data is buffered internally and uploaded
+ * as parts when the buffer fills. The upload is completed on close.
+ */
+struct guac_ts_s3_stream {
+
+    /** The S3 endpoint URL. */
+    char* endpoint;
+
+    /** The S3 bucket name. */
+    char* bucket;
+
+    /** The S3 object key. */
+    char* key;
+
+    /** The S3 region. */
+    char* region;
+
+    /** The S3 access key ID. */
+    char* access_key;
+
+    /** The S3 secret access key. */
+    char* secret_key;
+
+    /** The multipart upload ID assigned by S3. */
+    char upload_id[1024];
+
+    /** Internal write buffer. */
+    char* buffer;
+
+    /** Number of bytes currently in the buffer. */
+    size_t buffer_used;
+
+    /** Allocated size of the buffer. */
+    size_t buffer_size;
+
+    /** Array of uploaded part metadata. */
+    guac_ts_s3_part parts[GUAC_TS_S3_MAX_PARTS];
+
+    /** Number of parts uploaded so far. */
+    int part_count;
+
+    /** Whether a fatal error has occurred. */
+    int error;
+
+    /** Shared libcurl handle for all S3 requests. */
+    CURL* curl;
+
+};
 
 /**
  * libcurl write callback for receiving response data.
@@ -183,6 +280,44 @@ static size_t guac_ts_s3_write_callback(char* ptr, size_t size,
     memcpy(response->data + response->size, ptr, total);
     response->size += total;
     response->data[response->size] = '\0';
+    return total;
+}
+
+/**
+ * libcurl read callback for providing upload data from a memory buffer.
+ */
+static size_t guac_ts_s3_read_callback(char* buffer, size_t size,
+        size_t nmemb, void* userdata) {
+    guac_ts_s3_upload_context* ctx = (guac_ts_s3_upload_context*) userdata;
+    size_t max_bytes = size * nmemb;
+    size_t to_copy = ctx->remaining < max_bytes ? ctx->remaining : max_bytes;
+    if (to_copy > 0) {
+        memcpy(buffer, ctx->data, to_copy);
+        ctx->data += to_copy;
+        ctx->remaining -= to_copy;
+    }
+    return to_copy;
+}
+
+/**
+ * libcurl header callback that captures the ETag header value.
+ */
+static size_t guac_ts_s3_header_callback(char* buffer, size_t size,
+        size_t nitems, void* userdata) {
+    char* etag_out = (char*) userdata;
+    size_t total = size * nitems;
+    if (total > 5 && strncasecmp(buffer, "ETag:", 5) == 0) {
+        const char* value = buffer + 5;
+        while (*value == ' ' || *value == '\t')
+            value++;
+        size_t len = total - (value - buffer);
+        while (len > 0 && (value[len - 1] == '\r' || value[len - 1] == '\n'))
+            len--;
+        if (len >= 256)
+            len = 255;
+        memcpy(etag_out, value, len);
+        etag_out[len] = '\0';
+    }
     return total;
 }
 
@@ -225,75 +360,16 @@ static void guac_ts_extract_host(const char* endpoint, char* host_out) {
 }
 
 /**
- * Uploads a local file to S3 using a single PutObject request.
- *
- * @param endpoint
- *     The S3 endpoint URL.
- *
- * @param bucket
- *     The S3 bucket name.
- *
- * @param key
- *     The S3 object key.
- *
- * @param region
- *     The S3 region.
- *
- * @param access_key
- *     The S3 access key ID.
- *
- * @param secret_key
- *     The S3 secret access key.
- *
- * @param filepath
- *     The local file path to upload.
- *
- * @return
- *     Zero on success, non-zero on failure.
+ * Builds AWS Signature Version 4 headers for an S3 request.
  */
-static int guac_ts_s3_upload_file(const char* endpoint, const char* bucket,
-        const char* key, const char* region, const char* access_key,
-        const char* secret_key, const char* filepath) {
+static void guac_ts_s3_sign_request(guac_ts_s3_stream* stream,
+        const char* method, const char* uri, const char* query_string,
+        const char* payload_hash, const char* content_type,
+        struct curl_slist** headers) {
 
-    /* Open and read file into memory */
-    FILE* f = fopen(filepath, "rb");
-    if (f == NULL)
-        return 1;
-
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    char* file_data = NULL;
-    if (file_size > 0) {
-        file_data = malloc(file_size);
-        if (file_data == NULL) {
-            fclose(f);
-            return 1;
-        }
-        if (fread(file_data, 1, file_size, f) != (size_t) file_size) {
-            free(file_data);
-            fclose(f);
-            return 1;
-        }
-    }
-    fclose(f);
-
-    /* Build URL and URI */
-    char url[4096];
-    char uri[2048];
     char host[512];
+    guac_ts_extract_host(stream->endpoint, host);
 
-    snprintf(uri, sizeof(uri), "/%s/%s", bucket, key);
-    snprintf(url, sizeof(url), "%s%s", endpoint, uri);
-    guac_ts_extract_host(endpoint, host);
-
-    /* Compute payload hash */
-    char payload_hash[65];
-    guac_ts_sha256_hex(file_data ? file_data : "", file_size > 0 ? file_size : 0,
-            payload_hash);
-
-    /* Get current UTC time */
     time_t now = time(NULL);
     struct tm tm;
     gmtime_r(&now, &tm);
@@ -303,163 +379,546 @@ static int guac_ts_s3_upload_file(const char* endpoint, const char* bucket,
     strftime(date_stamp, sizeof(date_stamp), "%Y%m%d", &tm);
     strftime(amz_date, sizeof(amz_date), "%Y%m%dT%H%M%SZ", &tm);
 
-    /* Scope */
     char scope[128];
-    snprintf(scope, sizeof(scope), "%s/%s/s3/aws4_request", date_stamp, region);
+    snprintf(scope, sizeof(scope), "%s/%s/s3/aws4_request",
+            date_stamp, stream->region);
 
-    /* Canonical headers */
     char canonical_headers[2048];
-    snprintf(canonical_headers, sizeof(canonical_headers),
-            "content-type:application/octet-stream\nhost:%s\nx-amz-content-sha256:%s\nx-amz-date:%s\n",
-            host, payload_hash, amz_date);
-    const char* signed_headers = "content-type;host;x-amz-content-sha256;x-amz-date";
+    const char* signed_headers;
+    if (content_type) {
+        snprintf(canonical_headers, sizeof(canonical_headers),
+                "content-type:%s\nhost:%s\nx-amz-content-sha256:%s\nx-amz-date:%s\n",
+                content_type, host, payload_hash, amz_date);
+        signed_headers = "content-type;host;x-amz-content-sha256;x-amz-date";
+    }
+    else {
+        snprintf(canonical_headers, sizeof(canonical_headers),
+                "host:%s\nx-amz-content-sha256:%s\nx-amz-date:%s\n",
+                host, payload_hash, amz_date);
+        signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    }
 
-    /* Canonical request */
     char canonical_request[8192];
     snprintf(canonical_request, sizeof(canonical_request),
-            "PUT\n%s\n\n%s\n%s\n%s",
-            uri, canonical_headers, signed_headers, payload_hash);
+            "%s\n%s\n%s\n%s\n%s\n%s",
+            method, uri, query_string ? query_string : "",
+            canonical_headers, signed_headers, payload_hash);
 
-    /* Hash canonical request */
     char canonical_request_hash[65];
     guac_ts_sha256_hex(canonical_request, strlen(canonical_request),
             canonical_request_hash);
 
-    /* String to sign */
     char string_to_sign[4096];
     snprintf(string_to_sign, sizeof(string_to_sign),
             "AWS4-HMAC-SHA256\n%s\n%s\n%s",
             amz_date, scope, canonical_request_hash);
 
-    /* Derive signing key */
     unsigned char date_key[32], region_key[32], service_key[32], signing_key[32];
     char key_prefix[256];
-    snprintf(key_prefix, sizeof(key_prefix), "AWS4%s", secret_key);
-    guac_ts_hmac_sha256(key_prefix, strlen(key_prefix), date_stamp, strlen(date_stamp), date_key);
-    guac_ts_hmac_sha256(date_key, 32, region, strlen(region), region_key);
+    snprintf(key_prefix, sizeof(key_prefix), "AWS4%s", stream->secret_key);
+    guac_ts_hmac_sha256(key_prefix, strlen(key_prefix),
+            date_stamp, strlen(date_stamp), date_key);
+    guac_ts_hmac_sha256(date_key, 32,
+            stream->region, strlen(stream->region), region_key);
     guac_ts_hmac_sha256(region_key, 32, "s3", 2, service_key);
     guac_ts_hmac_sha256(service_key, 32, "aws4_request", 12, signing_key);
 
-    /* Compute signature */
     unsigned char signature_bytes[32];
-    guac_ts_hmac_sha256(signing_key, 32, string_to_sign, strlen(string_to_sign),
-            signature_bytes);
+    guac_ts_hmac_sha256(signing_key, 32,
+            string_to_sign, strlen(string_to_sign), signature_bytes);
 
     char signature[65];
     for (int i = 0; i < 32; i++)
         sprintf(signature + i * 2, "%02x", signature_bytes[i]);
     signature[64] = '\0';
 
-    /* Build Authorization header */
     char auth_header[1024];
     snprintf(auth_header, sizeof(auth_header),
             "Authorization: AWS4-HMAC-SHA256 Credential=%s/%s, "
             "SignedHeaders=%s, Signature=%s",
-            access_key, scope, signed_headers, signature);
+            stream->access_key, scope, signed_headers, signature);
 
-    /* Build header list */
     char amz_date_header[64];
-    snprintf(amz_date_header, sizeof(amz_date_header), "x-amz-date: %s", amz_date);
+    snprintf(amz_date_header, sizeof(amz_date_header),
+            "x-amz-date: %s", amz_date);
 
     char amz_content_sha256[128];
     snprintf(amz_content_sha256, sizeof(amz_content_sha256),
             "x-amz-content-sha256: %s", payload_hash);
 
+    *headers = NULL;
+    *headers = curl_slist_append(*headers, auth_header);
+    *headers = curl_slist_append(*headers, amz_date_header);
+    *headers = curl_slist_append(*headers, amz_content_sha256);
+
+    if (content_type) {
+        char ct_header[256];
+        snprintf(ct_header, sizeof(ct_header), "Content-Type: %s", content_type);
+        *headers = curl_slist_append(*headers, ct_header);
+    }
+
     char host_header[1024];
     snprintf(host_header, sizeof(host_header), "Host: %s", host);
+    *headers = curl_slist_append(*headers, host_header);
+}
+
+/**
+ * Initiates an S3 multipart upload and stores the upload ID in the stream.
+ *
+ * @return
+ *     Zero on success, non-zero on failure.
+ */
+static int guac_ts_s3_initiate_multipart(guac_ts_s3_stream* stream) {
+
+    char url[4096];
+    char uri[2048];
+
+    snprintf(uri, sizeof(uri), "/%s/%s", stream->bucket, stream->key);
+    snprintf(url, sizeof(url), "%s%s?uploads=", stream->endpoint, uri);
+
+    char payload_hash[65];
+    guac_ts_sha256_hex("", 0, payload_hash);
 
     struct curl_slist* headers = NULL;
-    headers = curl_slist_append(headers, auth_header);
-    headers = curl_slist_append(headers, amz_date_header);
-    headers = curl_slist_append(headers, amz_content_sha256);
-    headers = curl_slist_append(headers, "Content-Type: application/octet-stream");
-    headers = curl_slist_append(headers, host_header);
+    guac_ts_s3_sign_request(stream, "POST", uri, "uploads=",
+            payload_hash, "application/octet-stream", &headers);
 
-    /* Perform PUT */
-    CURL* curl = curl_easy_init();
-    if (curl == NULL) {
-        curl_slist_free_all(headers);
-        free(file_data);
+    guac_ts_s3_response response = { .data = NULL, .size = 0 };
+
+    curl_easy_reset(stream->curl);
+    curl_easy_setopt(stream->curl, CURLOPT_URL, url);
+    curl_easy_setopt(stream->curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(stream->curl, CURLOPT_POSTFIELDSIZE, 0L);
+    curl_easy_setopt(stream->curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(stream->curl, CURLOPT_WRITEFUNCTION,
+            guac_ts_s3_write_callback);
+    curl_easy_setopt(stream->curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(stream->curl);
+    curl_slist_free_all(headers);
+
+    if (res != CURLE_OK) {
+        free(response.data);
         return 1;
     }
 
-    guac_ts_s3_response discard = { .data = NULL, .size = 0 };
+    long http_code = 0;
+    curl_easy_getinfo(stream->curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (http_code != 200) {
+        free(response.data);
+        return 1;
+    }
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
-    curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t) file_size);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, guac_ts_s3_write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &discard);
-
-    /* Provide data from memory buffer via read callback */
-    if (file_data != NULL && file_size > 0) {
-        FILE* upload_file = fopen(filepath, "rb");
-        if (upload_file) {
-            curl_easy_setopt(curl, CURLOPT_READDATA, upload_file);
+    /* Parse UploadId from XML response */
+    if (response.data) {
+        char* start = strstr(response.data, "<UploadId>");
+        char* end = start ? strstr(start, "</UploadId>") : NULL;
+        if (start && end) {
+            start += 10;
+            size_t id_len = end - start;
+            if (id_len >= sizeof(stream->upload_id))
+                id_len = sizeof(stream->upload_id) - 1;
+            memcpy(stream->upload_id, start, id_len);
+            stream->upload_id[id_len] = '\0';
         }
+        else {
+            free(response.data);
+            return 1;
+        }
+        free(response.data);
     }
     else {
-        /* Empty file */
-        curl_easy_setopt(curl, CURLOPT_READDATA, NULL);
+        return 1;
     }
 
-    CURLcode res = curl_easy_perform(curl);
+    return 0;
+}
 
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+/**
+ * Uploads a single part of the multipart upload.
+ *
+ * @return
+ *     Zero on success, non-zero on failure.
+ */
+static int guac_ts_s3_upload_part(guac_ts_s3_stream* stream,
+        const char* part_data, size_t part_size, int part_number) {
 
+    char url[4096];
+    char uri[2048];
+    char query[2048];
+
+    snprintf(uri, sizeof(uri), "/%s/%s", stream->bucket, stream->key);
+    snprintf(query, sizeof(query), "partNumber=%d&uploadId=%s",
+            part_number, stream->upload_id);
+    snprintf(url, sizeof(url), "%s%s?%s", stream->endpoint, uri, query);
+
+    char payload_hash[65];
+    guac_ts_sha256_hex(part_data, part_size, payload_hash);
+
+    struct curl_slist* headers = NULL;
+    guac_ts_s3_sign_request(stream, "PUT", uri, query,
+            payload_hash, "application/octet-stream", &headers);
+
+    guac_ts_s3_upload_context upload_ctx = {
+        .data = part_data,
+        .remaining = part_size
+    };
+
+    char etag[256] = "";
+
+    curl_easy_reset(stream->curl);
+    curl_easy_setopt(stream->curl, CURLOPT_URL, url);
+    curl_easy_setopt(stream->curl, CURLOPT_UPLOAD, 1L);
+    curl_easy_setopt(stream->curl, CURLOPT_READFUNCTION,
+            guac_ts_s3_read_callback);
+    curl_easy_setopt(stream->curl, CURLOPT_READDATA, &upload_ctx);
+    curl_easy_setopt(stream->curl, CURLOPT_INFILESIZE_LARGE,
+            (curl_off_t) part_size);
+    curl_easy_setopt(stream->curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(stream->curl, CURLOPT_HEADERFUNCTION,
+            guac_ts_s3_header_callback);
+    curl_easy_setopt(stream->curl, CURLOPT_HEADERDATA, etag);
+
+    guac_ts_s3_response discard = { .data = NULL, .size = 0 };
+    curl_easy_setopt(stream->curl, CURLOPT_WRITEFUNCTION,
+            guac_ts_s3_write_callback);
+    curl_easy_setopt(stream->curl, CURLOPT_WRITEDATA, &discard);
+
+    CURLcode res = curl_easy_perform(stream->curl);
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    free(file_data);
     free(discard.data);
 
-    if (res != CURLE_OK || http_code != 200)
+    if (res != CURLE_OK)
+        return 1;
+
+    long http_code = 0;
+    curl_easy_getinfo(stream->curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (http_code != 200)
+        return 1;
+
+    if (stream->part_count < GUAC_TS_S3_MAX_PARTS) {
+        stream->parts[stream->part_count].part_number = part_number;
+        strncpy(stream->parts[stream->part_count].etag, etag,
+                sizeof(stream->parts[stream->part_count].etag) - 1);
+        stream->parts[stream->part_count].etag[255] = '\0';
+        stream->part_count++;
+    }
+
+    return 0;
+}
+
+/**
+ * Completes the multipart upload by sending the list of parts to S3.
+ *
+ * @return
+ *     Zero on success, non-zero on failure.
+ */
+static int guac_ts_s3_complete_multipart(guac_ts_s3_stream* stream) {
+
+    size_t xml_size = 256 + stream->part_count * 512;
+    char* xml = guac_mem_alloc(xml_size);
+    int offset = 0;
+
+    offset += snprintf(xml + offset, xml_size - offset,
+            "<CompleteMultipartUpload>");
+
+    for (int i = 0; i < stream->part_count; i++) {
+        offset += snprintf(xml + offset, xml_size - offset,
+                "<Part><PartNumber>%d</PartNumber><ETag>%s</ETag></Part>",
+                stream->parts[i].part_number, stream->parts[i].etag);
+    }
+
+    offset += snprintf(xml + offset, xml_size - offset,
+            "</CompleteMultipartUpload>");
+
+    char url[4096];
+    char uri[2048];
+    char query[2048];
+
+    snprintf(uri, sizeof(uri), "/%s/%s", stream->bucket, stream->key);
+    snprintf(query, sizeof(query), "uploadId=%s", stream->upload_id);
+    snprintf(url, sizeof(url), "%s%s?%s", stream->endpoint, uri, query);
+
+    char payload_hash[65];
+    guac_ts_sha256_hex(xml, strlen(xml), payload_hash);
+
+    struct curl_slist* headers = NULL;
+    guac_ts_s3_sign_request(stream, "POST", uri, query,
+            payload_hash, "application/xml", &headers);
+
+    guac_ts_s3_upload_context upload_ctx = {
+        .data = xml,
+        .remaining = strlen(xml)
+    };
+
+    guac_ts_s3_response response = { .data = NULL, .size = 0 };
+
+    curl_easy_reset(stream->curl);
+    curl_easy_setopt(stream->curl, CURLOPT_URL, url);
+    curl_easy_setopt(stream->curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(stream->curl, CURLOPT_READFUNCTION,
+            guac_ts_s3_read_callback);
+    curl_easy_setopt(stream->curl, CURLOPT_READDATA, &upload_ctx);
+    curl_easy_setopt(stream->curl, CURLOPT_POSTFIELDSIZE_LARGE,
+            (curl_off_t) strlen(xml));
+    curl_easy_setopt(stream->curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(stream->curl, CURLOPT_WRITEFUNCTION,
+            guac_ts_s3_write_callback);
+    curl_easy_setopt(stream->curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(stream->curl);
+    curl_slist_free_all(headers);
+    guac_mem_free(xml);
+    free(response.data);
+
+    if (res != CURLE_OK)
+        return 1;
+
+    long http_code = 0;
+    curl_easy_getinfo(stream->curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (http_code != 200)
         return 1;
 
     return 0;
+}
+
+/**
+ * Aborts the multipart upload.
+ */
+static void guac_ts_s3_abort_multipart(guac_ts_s3_stream* stream) {
+
+    char url[4096];
+    char uri[2048];
+    char query[2048];
+
+    snprintf(uri, sizeof(uri), "/%s/%s", stream->bucket, stream->key);
+    snprintf(query, sizeof(query), "uploadId=%s", stream->upload_id);
+    snprintf(url, sizeof(url), "%s%s?%s", stream->endpoint, uri, query);
+
+    char payload_hash[65];
+    guac_ts_sha256_hex("", 0, payload_hash);
+
+    struct curl_slist* headers = NULL;
+    guac_ts_s3_sign_request(stream, "DELETE", uri, query,
+            payload_hash, NULL, &headers);
+
+    curl_easy_reset(stream->curl);
+    curl_easy_setopt(stream->curl, CURLOPT_URL, url);
+    curl_easy_setopt(stream->curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    curl_easy_setopt(stream->curl, CURLOPT_HTTPHEADER, headers);
+
+    guac_ts_s3_response discard = { .data = NULL, .size = 0 };
+    curl_easy_setopt(stream->curl, CURLOPT_WRITEFUNCTION,
+            guac_ts_s3_write_callback);
+    curl_easy_setopt(stream->curl, CURLOPT_WRITEDATA, &discard);
+
+    curl_easy_perform(stream->curl);
+    curl_slist_free_all(headers);
+    free(discard.data);
+}
+
+/**
+ * Opens a new S3 multipart upload stream.
+ *
+ * @return
+ *     A new guac_ts_s3_stream, or NULL on failure.
+ */
+static guac_ts_s3_stream* guac_ts_s3_stream_open(const char* endpoint,
+        const char* bucket, const char* key, const char* region,
+        const char* access_key, const char* secret_key, size_t buffer_size) {
+
+    guac_ts_s3_stream* stream = guac_mem_alloc(sizeof(guac_ts_s3_stream));
+    memset(stream, 0, sizeof(guac_ts_s3_stream));
+
+    stream->endpoint = guac_mem_alloc(strlen(endpoint) + 1);
+    strcpy(stream->endpoint, endpoint);
+
+    stream->bucket = guac_mem_alloc(strlen(bucket) + 1);
+    strcpy(stream->bucket, bucket);
+
+    stream->key = guac_mem_alloc(strlen(key) + 1);
+    strcpy(stream->key, key);
+
+    stream->region = guac_mem_alloc(strlen(region) + 1);
+    strcpy(stream->region, region);
+
+    stream->access_key = guac_mem_alloc(strlen(access_key) + 1);
+    strcpy(stream->access_key, access_key);
+
+    stream->secret_key = guac_mem_alloc(strlen(secret_key) + 1);
+    strcpy(stream->secret_key, secret_key);
+
+    stream->buffer_size = buffer_size;
+    stream->buffer = guac_mem_alloc(buffer_size);
+    stream->buffer_used = 0;
+    stream->part_count = 0;
+    stream->error = 0;
+    stream->upload_id[0] = '\0';
+
+    stream->curl = curl_easy_init();
+    if (stream->curl == NULL) {
+        guac_mem_free(stream->buffer);
+        guac_mem_free(stream->endpoint);
+        guac_mem_free(stream->bucket);
+        guac_mem_free(stream->key);
+        guac_mem_free(stream->region);
+        guac_mem_free(stream->access_key);
+        guac_mem_free(stream->secret_key);
+        guac_mem_free(stream);
+        return NULL;
+    }
+
+    if (guac_ts_s3_initiate_multipart(stream)) {
+        curl_easy_cleanup(stream->curl);
+        guac_mem_free(stream->buffer);
+        guac_mem_free(stream->endpoint);
+        guac_mem_free(stream->bucket);
+        guac_mem_free(stream->key);
+        guac_mem_free(stream->region);
+        guac_mem_free(stream->access_key);
+        guac_mem_free(stream->secret_key);
+        guac_mem_free(stream);
+        return NULL;
+    }
+
+    return stream;
+}
+
+/**
+ * Writes data to an S3 stream. Data is buffered and uploaded as parts when
+ * the buffer reaches the minimum part size.
+ *
+ * @return
+ *     Zero on success, non-zero on failure.
+ */
+static int guac_ts_s3_stream_write(guac_ts_s3_stream* stream,
+        const char* data, size_t length) {
+
+    if (stream->error)
+        return 1;
+
+    while (length > 0) {
+
+        size_t remaining = stream->buffer_size - stream->buffer_used;
+
+        /* If buffer is full, flush it */
+        if (remaining == 0) {
+            int part_number = stream->part_count + 1;
+            if (guac_ts_s3_upload_part(stream, stream->buffer,
+                        stream->buffer_used, part_number)) {
+                stream->error = 1;
+                return 1;
+            }
+            stream->buffer_used = 0;
+            remaining = stream->buffer_size;
+        }
+
+        size_t chunk = length < remaining ? length : remaining;
+        memcpy(stream->buffer + stream->buffer_used, data, chunk);
+        stream->buffer_used += chunk;
+        data += chunk;
+        length -= chunk;
+
+        /* Auto-flush if buffer reached minimum part size */
+        if (stream->buffer_used >= GUAC_TS_S3_MIN_PART_SIZE) {
+            int part_number = stream->part_count + 1;
+            if (guac_ts_s3_upload_part(stream, stream->buffer,
+                        stream->buffer_used, part_number)) {
+                stream->error = 1;
+                return 1;
+            }
+            stream->buffer_used = 0;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * Closes an S3 stream, uploading any remaining buffered data as the final
+ * part and completing (or aborting) the multipart upload. Frees all resources.
+ */
+static void guac_ts_s3_stream_close(guac_ts_s3_stream* stream) {
+
+    if (stream == NULL)
+        return;
+
+    /* Upload any remaining buffered data as the final part */
+    if (!stream->error && stream->buffer_used > 0) {
+        int part_number = stream->part_count + 1;
+        if (guac_ts_s3_upload_part(stream, stream->buffer,
+                    stream->buffer_used, part_number)) {
+            stream->error = 1;
+        }
+    }
+
+    /* Complete or abort the multipart upload */
+    if (!stream->error && stream->part_count > 0)
+        guac_ts_s3_complete_multipart(stream);
+    else if (stream->error && stream->upload_id[0] != '\0')
+        guac_ts_s3_abort_multipart(stream);
+
+    /* Free all resources */
+    curl_easy_cleanup(stream->curl);
+    guac_mem_free(stream->buffer);
+    guac_mem_free(stream->endpoint);
+    guac_mem_free(stream->bucket);
+    guac_mem_free(stream->key);
+    guac_mem_free(stream->region);
+    guac_mem_free(stream->access_key);
+    guac_mem_free(stream->secret_key);
+    guac_mem_free(stream);
 }
 
 guac_terminal_typescript* guac_terminal_typescript_alloc_s3(const char* name,
         const char* endpoint, const char* bucket, const char* key,
         const char* region, const char* access_key, const char* secret_key) {
 
-    /* Create temp directory for typescript files */
-    char temp_dir[] = "/tmp/guac-typescript-XXXXXX";
-    if (mkdtemp(temp_dir) == NULL)
+    /* Build S3 key for timing file */
+    char timing_key[2048];
+    snprintf(timing_key, sizeof(timing_key), "%s.timing", key);
+
+    /* Open S3 multipart upload streams for data and timing */
+    guac_ts_s3_stream* data_stream = guac_ts_s3_stream_open(endpoint, bucket,
+            key, region, access_key, secret_key,
+            GUAC_TS_S3_MIN_PART_SIZE + (1024 * 1024));
+    if (data_stream == NULL)
         return NULL;
 
-    /* Allocate typescript using temp dir as path */
-    guac_terminal_typescript* typescript =
-        guac_terminal_typescript_alloc(temp_dir, name, 0, 1);
-    if (typescript == NULL) {
-        rmdir(temp_dir);
+    guac_ts_s3_stream* timing_stream = guac_ts_s3_stream_open(endpoint, bucket,
+            timing_key, region, access_key, secret_key,
+            256 * 1024);
+    if (timing_stream == NULL) {
+        guac_ts_s3_stream_close(data_stream);
         return NULL;
     }
 
-    /* Store S3 config for upload on close */
+    /* Allocate typescript structure */
+    guac_terminal_typescript* typescript =
+        guac_mem_alloc(sizeof(guac_terminal_typescript));
+
+    /* No local file descriptors */
+    typescript->data_fd = -1;
+    typescript->timing_fd = -1;
+
+    /* Store S3 streams */
     typescript->use_s3 = 1;
+    typescript->s3_data_stream = data_stream;
+    typescript->s3_timing_stream = timing_stream;
 
-    typescript->s3_endpoint = guac_mem_alloc(strlen(endpoint) + 1);
-    strcpy(typescript->s3_endpoint, endpoint);
+    /* Initialize buffer state */
+    typescript->length = 0;
+    typescript->last_flush = guac_timestamp_current();
 
-    typescript->s3_bucket = guac_mem_alloc(strlen(bucket) + 1);
-    strcpy(typescript->s3_bucket, bucket);
+    /* Set filenames for logging purposes */
+    snprintf(typescript->data_filename, sizeof(typescript->data_filename),
+            "%s", name);
+    snprintf(typescript->timing_filename, sizeof(typescript->timing_filename),
+            "%s.%s", name, GUAC_TERMINAL_TYPESCRIPT_TIMING_SUFFIX);
 
-    typescript->s3_key = guac_mem_alloc(strlen(key) + 1);
-    strcpy(typescript->s3_key, key);
-
-    typescript->s3_region = guac_mem_alloc(strlen(region) + 1);
-    strcpy(typescript->s3_region, region);
-
-    typescript->s3_access_key = guac_mem_alloc(strlen(access_key) + 1);
-    strcpy(typescript->s3_access_key, access_key);
-
-    typescript->s3_secret_key = guac_mem_alloc(strlen(secret_key) + 1);
-    strcpy(typescript->s3_secret_key, secret_key);
-
-    typescript->s3_temp_path = guac_mem_alloc(strlen(temp_dir) + 1);
-    strcpy(typescript->s3_temp_path, temp_dir);
+    /* Write typescript header directly to S3 data stream */
+    guac_ts_s3_stream_write(data_stream, GUAC_TERMINAL_TYPESCRIPT_HEADER,
+            sizeof(GUAC_TERMINAL_TYPESCRIPT_HEADER) - 1);
 
     return typescript;
 
@@ -476,58 +935,30 @@ void guac_terminal_typescript_free(guac_terminal_typescript* typescript) {
     /* Flush any pending data */
     guac_terminal_typescript_flush(typescript);
 
-    /* Write footer */
+#ifdef ENABLE_S3
+    if (typescript->use_s3) {
+
+        /* Write footer directly to S3 data stream */
+        guac_ts_s3_stream_write(typescript->s3_data_stream,
+                GUAC_TERMINAL_TYPESCRIPT_FOOTER,
+                sizeof(GUAC_TERMINAL_TYPESCRIPT_FOOTER) - 1);
+
+        /* Complete both multipart uploads */
+        guac_ts_s3_stream_close(typescript->s3_data_stream);
+        guac_ts_s3_stream_close(typescript->s3_timing_stream);
+
+        guac_mem_free(typescript);
+        return;
+    }
+#endif
+
+    /* Write footer to local file */
     guac_common_write(typescript->data_fd, GUAC_TERMINAL_TYPESCRIPT_FOOTER,
             sizeof(GUAC_TERMINAL_TYPESCRIPT_FOOTER) - 1);
 
     /* Close file descriptors */
     close(typescript->data_fd);
     close(typescript->timing_fd);
-
-#ifdef ENABLE_S3
-    /* Upload to S3 if configured */
-    if (typescript->use_s3) {
-
-        /* Build full paths to the temp files */
-        char data_path[4096];
-        char timing_path[4096];
-        snprintf(data_path, sizeof(data_path), "%s/%s",
-                typescript->s3_temp_path, typescript->data_filename);
-        snprintf(timing_path, sizeof(timing_path), "%s/%s",
-                typescript->s3_temp_path, typescript->timing_filename);
-
-        /* Build S3 key for timing file */
-        char timing_key[2048];
-        snprintf(timing_key, sizeof(timing_key), "%s.timing",
-                typescript->s3_key);
-
-        /* Upload data file */
-        guac_ts_s3_upload_file(typescript->s3_endpoint, typescript->s3_bucket,
-                typescript->s3_key, typescript->s3_region,
-                typescript->s3_access_key, typescript->s3_secret_key,
-                data_path);
-
-        /* Upload timing file */
-        guac_ts_s3_upload_file(typescript->s3_endpoint, typescript->s3_bucket,
-                timing_key, typescript->s3_region,
-                typescript->s3_access_key, typescript->s3_secret_key,
-                timing_path);
-
-        /* Clean up temp files */
-        unlink(data_path);
-        unlink(timing_path);
-        rmdir(typescript->s3_temp_path);
-
-        /* Free S3 config strings */
-        guac_mem_free(typescript->s3_endpoint);
-        guac_mem_free(typescript->s3_bucket);
-        guac_mem_free(typescript->s3_key);
-        guac_mem_free(typescript->s3_region);
-        guac_mem_free(typescript->s3_access_key);
-        guac_mem_free(typescript->s3_secret_key);
-        guac_mem_free(typescript->s3_temp_path);
-    }
-#endif
 
     /* Free allocated typescript data */
     guac_mem_free(typescript);
