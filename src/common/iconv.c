@@ -432,6 +432,13 @@ int guac_iconv(guac_iconv_read* reader, const char** input, int in_remaining,
         value = reader(input, in_remaining);
         in_remaining -= *input - read_start;
 
+        /* A reader that consumes no input cannot make progress (e.g. a
+         * truncated trailing multibyte sequence at the end of the buffer).
+         * Stop here rather than emitting an unintended character or, when the
+         * writer is likewise unable to advance, looping forever. */
+        if (*input == read_start)
+            break;
+
         /* Write character */
         write_start = *output;
         writer(output, out_remaining, value);
@@ -450,7 +457,10 @@ int guac_iconv(guac_iconv_read* reader, const char** input, int in_remaining,
 
 int GUAC_READ_UTF8(const char** input, int remaining) {
 
-    int value;
+    /* Initialize to zero so that a truncated trailing multibyte sequence
+     * (where guac_utf8_read() reads nothing and leaves the codepoint unset)
+     * yields a defined value rather than leaking uninitialized memory. */
+    int value = 0;
 
     *input += guac_utf8_read(*input, remaining, &value);
     return value;
@@ -475,6 +485,12 @@ int GUAC_READ_UTF16(const char** input, int remaining) {
 
 int GUAC_READ_CP1252(const char** input, int remaining) {
 
+    /* Bail if no data remains. A single-byte encoding requires at least one
+     * byte; without this guard a normalizing reader peeking past a trailing
+     * '\r' would read one byte beyond the end of the input buffer. */
+    if (remaining < 1)
+        return 0;
+
     int value = *((unsigned char*) *input);
 
     /* Replace value with exception if not identical to ISO-8859-1 */
@@ -487,6 +503,10 @@ int GUAC_READ_CP1252(const char** input, int remaining) {
 }
 
 int GUAC_READ_ISO8859_1(const char** input, int remaining) {
+
+    /* Bail if no data remains (see GUAC_READ_CP1252). */
+    if (remaining < 1)
+        return 0;
 
     int value = *((unsigned char*) *input);
 
@@ -560,6 +580,10 @@ int GUAC_READ_ISO8859_1_NORMALIZED(const char** input, int remaining) {
 }
 
 int GUAC_READ_MACROMAN(const char** input, int remaining) {
+
+    /* Bail if no data remains (see GUAC_READ_CP1252). */
+    if (remaining < 1)
+        return 0;
 
     /* MacRoman is a single-byte encoding: each character is one byte */
     int value = (unsigned char) **input;

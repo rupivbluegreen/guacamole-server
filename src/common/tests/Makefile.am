@@ -37,6 +37,7 @@ noinst_HEADERS =               \
     iconv/convert-test-data.h
 
 test_common_SOURCES =          \
+    iconv/bounds.c             \
     iconv/convert.c            \
     iconv/convert-test-data.c  \
     rect/clip_and_split.c      \
