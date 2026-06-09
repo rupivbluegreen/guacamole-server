@@ -566,12 +566,13 @@ struct guac_user {
      * Handler for USB data events sent by the Guacamole web-client.
      *
      * The handler takes the user that sent the data, the device ID,
-     * endpoint number, the base64-encoded data, and the transfer type.
+     * endpoint number, the decoded binary data and its length in bytes, and
+     * the transfer type.
      *
      * Example:
      * @code
      *     int usbdata_handler(guac_user* user, const char* device_id,
-     *             int endpoint_number, const char* data,
+     *             int endpoint_number, const char* data, int data_length,
      *             const char* transfer_type);
      *
      *     int guac_user_init(guac_user* user, int argc, char** argv) {

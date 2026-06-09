@@ -561,7 +561,12 @@ typedef int guac_user_usbconnect_handler(guac_user* user, const char* device_id,
 *     interface_data from the usbconnect instruction.
 *
 * @param data
-*     The base64-encoded USB data.
+*     The decoded USB data. This is raw binary data and may contain NUL
+*     bytes; its length is given by data_length and it is not necessarily
+*     NUL-terminated.
+*
+* @param data_length
+*     The length of the decoded USB data, in bytes.
 *
 * @param transfer_type
 *     The type of USB transfer (bulk, interrupt, isochronous, control).
@@ -571,7 +576,8 @@ typedef int guac_user_usbconnect_handler(guac_user* user, const char* device_id,
 *     occurred.
 */
 typedef int guac_user_usbdata_handler(guac_user* user, const char* device_id,
-    int endpoint_number, const char* data, const char* transfer_type);
+    int endpoint_number, const char* data, int data_length,
+    const char* transfer_type);
 
 /**
 * Handler for Guacamole USB disconnect events, invoked when a "usbdisconnect"

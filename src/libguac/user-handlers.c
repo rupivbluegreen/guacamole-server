@@ -669,13 +669,16 @@ int __guac_handle_usbdata(guac_user* user, int argc, char** argv) {
     }
 
     if (user->usbdata_handler) {
-        /* Decode base64 data */
-        guac_protocol_decode_base64(argv[2]);
+        /* Decode base64 data in place. The decoded data is binary and may
+         * contain NUL bytes, so the decoded length must be passed explicitly
+         * to the handler rather than relying on a NUL terminator. */
+        int data_length = guac_protocol_decode_base64(argv[2]);
         return user->usbdata_handler(
             user,
             argv[0], /* device_id */
             atoi(argv[1]), /* endpoint_number */
             argv[2], /* data (now decoded) */
+            data_length, /* length of decoded data, in bytes */
             argv[3]  /* transfer_type */
         );
     }
