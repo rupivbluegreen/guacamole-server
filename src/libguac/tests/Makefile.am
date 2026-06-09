@@ -55,6 +55,7 @@ test_libguac_SOURCES =               \
     mem/realloc_or_die.c             \
     mem/zalloc.c                     \
     parser/append.c                  \
+    parser/length.c                  \
     parser/read.c                    \
     pool/next_free.c                 \
     protocol/base64_decode.c         \

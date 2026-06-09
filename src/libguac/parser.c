@@ -79,8 +79,18 @@ int guac_parser_append(guac_parser* parser, void* buffer, int length) {
             bytes_parsed++;
 
             /* If digit, add to length */
-            if (c >= '0' && c <= '9')
+            if (c >= '0' && c <= '9') {
                 parsed_length = parsed_length*10 + c - '0';
+
+                /* Reject any length exceeding the maximum immediately. This
+                 * enforces the bound before a long run of digits can overflow
+                 * the (signed) accumulator, which would be undefined behavior
+                 * and could defeat this very check under optimization. */
+                if (parsed_length > GUAC_INSTRUCTION_MAX_LENGTH) {
+                    parser->state = GUAC_PARSE_ERROR;
+                    return 0;
+                }
+            }
 
             /* If period, switch to parsing content */
             else if (c == '.') {
@@ -95,12 +105,6 @@ int guac_parser_append(guac_parser* parser, void* buffer, int length) {
                 return 0;
             }
 
-        }
-
-        /* If too long, parse error */
-        if (parsed_length > GUAC_INSTRUCTION_MAX_LENGTH) {
-            parser->state = GUAC_PARSE_ERROR;
-            return 0;
         }
 
         /* Save length */
